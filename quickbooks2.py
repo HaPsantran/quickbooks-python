@@ -769,10 +769,10 @@ class QuickBooks():
 
             mime_type = {
                 "pdf" :"pdf",
+                # because here: https://technet.microsoft.com/en-us/library/
+                #  ee309278(office.12).aspx
                 "xlsx":"vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 "pptx":"vnd.ms-powerpoint"}.get(extension, "plain/text")
-
-            print mime_type
             
             request_body = textwrap.dedent(
                 """
