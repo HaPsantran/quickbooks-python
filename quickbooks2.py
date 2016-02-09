@@ -768,11 +768,13 @@ class QuickBooks():
             extension = file_name.rsplit(".", 1)[1]
 
             mime_type = {
-                "pdf" :"pdf",
+                "pdf" : "pdf",
                 # because here: https://technet.microsoft.com/en-us/library/
                 #  ee309278(office.12).aspx
-                "xlsx":"vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "pptx":"vnd.ms-powerpoint"}.get(extension, "plain/text")
+                #"xlsx":"vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                # But then, on subsequent testing with a successful upload...
+                "xlsx" : "vnd.ms-excel",
+                "pptx" : "vnd.ms-powerpoint"}.get(extension, "plain/text")
             
             request_body = textwrap.dedent(
                 """
