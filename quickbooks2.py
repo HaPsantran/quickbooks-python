@@ -29,7 +29,6 @@ class QuickBooks():
     qbService = None
 
     def __init__(self, **args):
-
         if 'cred_path' in args:
             self.read_creds_from_file(args['cred_path'])
 
@@ -282,7 +281,7 @@ class QuickBooks():
         # 500 is the maximum number of results returned by QB
         # Or is it 1,000? Hmmm...
         max_results = 1000
-        start_position = 0
+        start_position = 1
         more = True
         data_set = []
         url = self.base_url_v3 + "/company/%s/query" % self.company_id
@@ -303,13 +302,18 @@ class QuickBooks():
             r_dict = self.hammer_it(r_type, url, payload, "text")
             
             try:
-                access = r_dict['QueryResponse'][qb_object]
+                if "count(*)" in payload.lower():
+                    return r_dict['QueryResponse']["totalCount"]
+                else:
+                    access = r_dict['QueryResponse'][qb_object]
             except:
                 if 'QueryResponse' in r_dict and r_dict['QueryResponse'] == {}:
                     #print "Query OK, no results: %s" % r_dict['QueryResponse']
                     return data_set
                 else:
-                    print "FAILED", r_dict
+                    print "FAILED",
+                    #import ipdb;ipdb.set_trace()
+                    print json.dumps(r_dict, indent=4)
                     """
                     r_dict = self.keep_trying(r_type,
                                               url,
@@ -337,14 +341,9 @@ class QuickBooks():
 
 
             if self.verbosity > 3:
-                print "({} batch begins with record {} and contains ".format(
-                    qb_object, start_position) + "{} records)".format(
+                print "({} batch begins with record {:7} and contains ".format(
+                    qb_object, start_position) + "{:4} records)".format(
                         result_count)
-
-
-            # Just some math to prepare for the next iteration
-            if start_position == 0:
-                start_position = 1
 
             start_position = start_position + max_results
             payload = "{} STARTPOSITION {} MAXRESULTS {}".format(
@@ -501,7 +500,7 @@ class QuickBooks():
         if self.verbosity > 0:
             if qbbo in ["Employee", "Vendor"]:
                 reffer = "called %s" % e_dict.get("DisplayName")
-            elif qbbo in ["Account", "Customer", "Item"]:
+            elif qbbo in ["Account", "Class", "Customer", "Item"]:
                 reffer = "called %s" % e_dict.get("Name")
             elif qbbo in ["Attachable"]:
                 reffer = "called %s" % e_dict.get("FileName", "<no FileName>")
@@ -557,16 +556,30 @@ class QuickBooks():
         Don't need to give it an Id, just the whole object as returned by
         a read operation.
         """
-
-        Id = str(object_id).replace(".0","")
-
-        if not json_dict:
-            if Id:
-                json_dict = self.read_object(qbbo, Id)
-
-            else:
-                raise Exception("Need either an Id or an existing object dict!")
-
+        attr_name = qbbo+"s"
+        if not hasattr(self, attr_name):
+            setattr(self, attr_name, collections.OrderedDict())
+        
+        if object_id:
+            Id = str(object_id).replace(".0","")
+            json_dict = self.read_object(qbbo, Id)
+            if not json_dict:
+                # There was a read problem...assume the object doesn't even
+                #  exist anymore (if it ever did)
+                if object_id in getattr(self, attr_name):
+                    del(getattr(self, attr_name)[object_id])
+                return {"Synthetic Response" :
+                        "qbo.py failed to read object, which may not exist."}
+        elif json_dict:
+            Id = json_dict["Id"]
+        else:
+            raise Exception("Need either an Id or an existing object dict!")
+                        
+        if hasattr(self, attr_name) and not Id in getattr(self, attr_name):
+            # It's already been deleted (or was never there)
+            return {"Synthetic Response" :
+                    "Object Was Already Gone / Never There"}
+        
         if not 'Id' in json_dict:
             print json.dumps(json_dict, indent=4)
 
@@ -580,8 +593,11 @@ class QuickBooks():
         if self.verbosity > 0:
             if qbbo in ["Employee", "Vendor"]:
                 reffer = "called %s" % json_dict.get("DisplayName")
-            elif qbbo in ["Account", "Customer", "Item"]:
+            elif qbbo in ["Account", "Class", "Customer", "Item",]:
                 reffer = "called %s" % json_dict.get("FullyQualifiedName")
+            elif qbbo in ["Attachable"]:
+                reffer = "called %s" % json_dict.get(
+                    "FileName", "<no FileName>")
             else:
                 reffer = "labeled %s" % json_dict.get(
                     "DocNumber", "<no DocNumber>")
@@ -591,17 +607,17 @@ class QuickBooks():
         response = self.hammer_it("POST", url, request_body, content_type,
                                   **{"params":{"operation":"delete"}})
 
+        if object_id in getattr(self, attr_name):
+            # Even if it failed, best to delete it from the cache...
+            del(getattr(self, attr_name)[object_id])
+        
         if not qbbo in response:
             if self.verbosity > 0:
                 print "It looks like the delete failed for {} {}.".format(
                     qbbo, object_id)
 
             return response
-
-        attr_name = qbbo+"s"
-        if hasattr(self, attr_name):
-            del(getattr(self, qbbo+"s")[Id])
-
+                          
         return response[qbbo]
 
     def upload_file(self, path, name="same", upload_type="automatic",
@@ -668,12 +684,14 @@ class QuickBooks():
                     "MetaData"]["LastUpdatedTime"])
 
             if file_mtime >= atch_mtime:
-                if self.vb > 1:
+                if self.vb > 3:
                     print "Not redownloading attachment, which is newer than"
                     print " the LastUpdatedTime of Attachable {}.".format(
                         attachment_id)
                     print "  file_mtime: {}".format(file_mtime)
                     print "  atch_mtime: {}".format(atch_mtime)
+                    print "The newer file is called: {}".format(
+                        path.rsplit("/", 1)[1])
                 return "DOWNLOAD NOT REPEATED"
             
         url = "https://quickbooks.api.intuit.com/v3/company/%s/download/%s" % \
@@ -711,6 +729,51 @@ class QuickBooks():
                                    
         return link
 
+    def capture_changes(self, since, qbbo_list="all"):
+        """
+        https://developer.intuit.com/docs/api/accounting/ChangeDataCapture
+
+        THIS ONLY GETS YOU THINGS AS RECENT AS THE LAST 30 DAYS!!!
+
+        YOU MUST PASS A UTC TIME TO THIS METHOD UNLESS YOU PASS A STRING
+         WITH THE CORRECTLY (INTUIT)-FORMATTED OFFSET BUILT IN...
+        """
+        url = "https://qb.sbfinance.intuit.com/v3/company/{}/cdc".format(
+            self.company_id)
+        
+        if qbbo_list == "all":
+            qbbo_list = self._BUSINESS_OBJECTS
+
+        if not since:
+            # get the max available by default
+            since = datetime.datetime.utcnow().replace(
+                tzinfo=pytz.utc) - datetime.timedelta(days=29)
+            
+        if isinstance(since, datetime.datetime):            
+            # WE'RE ASSUMING UTC TIME HERE!!!
+            since = since.strftime("%Y-%m-%dT%H:%M:%S.000-00:00")
+
+        test_time = datetime.datetime.strptime(
+            str(since), "%Y-%m-%dT%H:%M:%S.000-00:00")
+        test_days = (datetime.datetime.now() - test_time).days
+
+        if test_days > 29:
+            print "You asked for changes since {}".format(test_time)
+            print "That's {} days ago!".format(test_days)
+            
+            raise Exception("You can only get up to 30 days of changes.")
+
+        resp = self.hammer_it(
+            "GET", url, "", "", **{
+                "params" : {
+                    "changedSince" : since,
+                    "entities"     : ",".join(qbbo_list)}})
+
+        # This will be a list of dictionaries, each of which relates to
+        #  a specific response...
+        return resp
+        
+        
     def hammer_it(self, request_type, url, request_body, content_type,
                   accept = 'json', file_name=None, **req_kwargs):
         """
@@ -946,17 +1009,21 @@ class QuickBooks():
 
         return self.hammer_it("GET", url, None, "json", **{"params" : params})
     
-    def query_objects(self, business_object, params={}, query_tail = ""):
+    def query_objects(self, business_object, params={}, query_tail="",
+                      count_only=False):
         """
         Runs a query-type request against the QBOv3 API
         Gives you the option to create an AND-joined query by parameter
             or just pass in a whole query tail
         The parameter dicts should be keyed by parameter name and
             have twp-item tuples for values, which are operator and criterion
+
+        count_only allows you to figure out how many objects there are
+         without actually pulling all of them. This is VERY important if you
+         want to figure out if something (created in the past) has been deleted.
         """
 
         if business_object not in self._BUSINESS_OBJECTS:
-
             if business_object in self._biz_object_correctors:
                 business_object = self._biz_object_correctors[business_object]
 
@@ -969,7 +1036,10 @@ class QuickBooks():
         #but chances are any further filtering is easier done with Python
         #than in the query...
 
-        query_string="SELECT * FROM %s" % business_object
+        if count_only:
+            query_string="SELECT COUNT(*) FROM %s" % business_object
+        else:
+            query_string="SELECT * FROM %s" % business_object
 
         if query_tail == "" and not params == {}:
             #It's not entirely obvious what are valid properties for
@@ -1015,7 +1085,13 @@ class QuickBooks():
         results = self.query_fetch_more(
             r_type="POST", header_auth=True, realm=self.company_id,
             qb_object=business_object, original_payload=query_string)
-                
+
+        if count_only:
+            if self.verbosity > 4:
+                print "QBO counts {} {} objects".format(
+                    results, business_object)
+            return results
+        
         if self.verbosity > 4:
             print "qbo.query_objects() Found %s %ss!" % (
                 len(results), business_object)
@@ -1043,7 +1119,6 @@ class QuickBooks():
                 raise Exception("%s is not a valid QBO Business Object." % qbbo)
 
         elif qbbo in self._NAME_LIST_OBJECTS and query_tail == "":
-
             #to avoid confusion from 'deleted' accounts later...
             query_tail = "WHERE Active IN (true,false)"
 
