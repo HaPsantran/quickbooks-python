@@ -44,8 +44,10 @@ class QuickBooks():
 
         self.expires_on = args.get("expire_date", args.get("expires_on"))
 
+        self.verbosity = self.vb = args.get('verbosity', 0)
+        
         if not self.expires_on:
-            if self.verbosity > 0:
+            if self.verbosity > 8:
                 print "No expiration date for this token!?"
                 import ipdb;ipdb.set_trace()
         if isinstance(self.expires_on, (str, unicode)):
@@ -59,8 +61,6 @@ class QuickBooks():
             "acc_token_changed_callback", self.default_call_back)
 
         self.company_id = args.get('company_id', 0)
-
-        self.verbosity = self.vb = args.get('verbosity', 0)
 
         self._BUSINESS_OBJECTS = [
             "Account", "Attachable", "Bill", "BillPayment",
@@ -109,6 +109,8 @@ class QuickBooks():
 
     def _reconnect_if_time(self):
         current_date = datetime.date.today()
+        if not self.expires_on:
+            return
         days_diff = (self.expires_on - current_date).days
         if days_diff > 0:
             if days_diff <= self.reconnect_window_days_count:
@@ -119,7 +121,7 @@ class QuickBooks():
                     print "For %s:" % self.company_id
                     print "Unable to reconnect, try again later, you have " \
                         "{} days left to do that".format(days_diff)
-            elif self.verbosity > 1:
+            elif self.verbosity > 4:
                 #import ipdb;ipdb.set_trace()
                 print "Days remaining on %s QBO Access Token: %s" % (
                     self.company_id, days_diff)
